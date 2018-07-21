@@ -99,7 +99,7 @@ func main() {
 // locker is the sync.Locker that will be used to lock the database at the go layer
 func runTest(writerCount, readerCount, numRecords, numUpdates int, locker RWLocker) (time.Duration, error) {
 	// open it in memory mode
-	dsn := fmt.Sprintf("file:%d?cache=shared&_busy_timeout=100", time.Now().UnixNano())
+	dsn := fmt.Sprintf("file:%d?mode=memory&cache=shared&_busy_timeout=100", time.Now().UnixNano())
 	db, _ := sql.Open("sqlite3", dsn)
 	defer db.Close()
 
