@@ -2,10 +2,11 @@ package main
 
 import (
 	"database/sql"
+	"flag"
 	"fmt"
-	"log"
 	"math"
 	"math/rand"
+	"os"
 	"sync"
 	"time"
 
@@ -42,41 +43,13 @@ func (l *MutexWrapper) RUnlock() { l.Unlock() }
 
 func main() {
 
-	writerCount := 2
-	readerCount := 2
-	numRecords := 10
-	numUpdates := 500
+	testType := flag.String("type", "none", "Locking type: [none, mutex, rwmutex]")
+	writerCount := flag.Int("writers", 2, "Number of parallel writers")
+	readerCount := flag.Int("readers", 2, "Number of parallel readers ")
+	numRows := flag.Int("rows", 10, "Number of total DB rows, lower number = more contention")
+	numUpdates := flag.Int("updates", 500, "How many UPDATE dml operations to perform over numRows")
+	flag.Parse()
 
-	// test it with no mutex, letting sqlite deal with it
-	fmt.Println("Running no-mutex test")
-	durNoMutex, err := runTest(writerCount, readerCount, numRecords, numUpdates, &FakeLocker{})
-	if err != nil {
-		log.Fatal(err.Error())
-		return
-	}
-
-	// test it with golang's sync.Mutex
-	// see: https://github.com/mattn/go-sqlite3/issues/274
-	fmt.Println()
-	fmt.Println()
-	fmt.Println("Running sync.Mutex test")
-	durMutex, err := runTest(writerCount, readerCount, numRecords, numUpdates, &MutexWrapper{})
-	if err != nil {
-		log.Fatal(err.Error())
-		return
-	}
-
-	fmt.Println()
-	fmt.Println()
-	fmt.Println("Running sync.RWMutex test")
-	durRWMutex, err := runTest(writerCount, readerCount, numRecords, numUpdates, &sync.RWMutex{})
-	if err != nil {
-		log.Fatal(err.Error())
-		return
-	}
-
-	fmt.Println()
-	fmt.Println()
 	fmt.Println("Legend")
 	fmt.Println("---------------------------")
 	fmt.Println("Write       : ", WRITE_CODE)
@@ -84,20 +57,38 @@ func main() {
 	fmt.Println("Read        : ", SELECT_CODE)
 	fmt.Println("Read Retry  : ", SELECT_RETRY_CODE)
 	fmt.Println()
-	fmt.Println()
-	fmt.Println("Timings:")
-	fmt.Println("---------------------------")
-	fmt.Printf("No Mutex     took: %v (base)\n", durNoMutex)
-	fmt.Printf("sync.Mutex   took: %v diff (%v)\n", durMutex, durMutex-durNoMutex)
-	fmt.Printf("sync.RWMutex took: %v diff (%v)\n", durRWMutex, durRWMutex-durNoMutex)
 
+	var dur time.Duration
+	var err error
+	switch *testType {
+	case "none":
+		fmt.Println("Running no-mutex test")
+		dur, err = runTest(*writerCount, *readerCount, *numRows, *numUpdates, &FakeLocker{})
+	case "mutex":
+		fmt.Println("Running sync.Mutex test")
+		dur, err = runTest(*writerCount, *readerCount, *numRows, *numUpdates, &MutexWrapper{})
+	case "rwmutex":
+		fmt.Println("Running sync.RWMutex test")
+		dur, err = runTest(*writerCount, *readerCount, *numRows, *numUpdates, &sync.RWMutex{})
+	default:
+		fmt.Println("Invalid test type:", *testType)
+	}
+
+	if err != nil {
+		fmt.Println("Error: ", err.Error())
+		os.Exit(1)
+	} else {
+		fmt.Println()
+		fmt.Println()
+		fmt.Println("Duration: ", dur)
+	}
 }
 
 // runTests creates writerCount, readerCount goroutines to write/read to the
-// database respectively.  It will create numRecords and then do numUpdates to them
+// database respectively.  It will create numRows and then do numUpdates to them
 // while constantly reading from the database as fast as possible.
 // locker is the sync.Locker that will be used to lock the database at the go layer
-func runTest(writerCount, readerCount, numRecords, numUpdates int, locker RWLocker) (time.Duration, error) {
+func runTest(writerCount, readerCount, numRows, numUpdates int, locker RWLocker) (time.Duration, error) {
 	// open it in memory mode
 	dsn := fmt.Sprintf("file:%d?mode=memory&cache=shared&_busy_timeout=100", time.Now().UnixNano())
 	db, _ := sql.Open("sqlite3", dsn)
@@ -112,7 +103,7 @@ func runTest(writerCount, readerCount, numRecords, numUpdates int, locker RWLock
 	}
 
 	// fill the database with the records we will be using
-	for i := 0; i <= numRecords; i++ {
+	for i := 0; i <= numRows; i++ {
 		_, err := db.Exec("INSERT INTO testData(id, value) VALUES (?,0)", i)
 		if err != nil {
 			return 0, err
@@ -121,6 +112,8 @@ func runTest(writerCount, readerCount, numRecords, numUpdates int, locker RWLock
 
 	var readerWG sync.WaitGroup
 	stopReaders := make(chan bool)
+
+	// read from the database as much/fast as possible
 	for r := 0; r < readerCount; r++ {
 		readerWG.Add(1)
 		go func(id int) {
@@ -138,7 +131,7 @@ func runTest(writerCount, readerCount, numRecords, numUpdates int, locker RWLock
 						} else {
 							fmt.Print(SELECT_CODE)
 							for rows.Next() {
-								// just do some work ..
+								// purge it
 							}
 							break
 						}
@@ -166,7 +159,7 @@ func runTest(writerCount, readerCount, numRecords, numUpdates int, locker RWLock
 				locker.Lock()
 
 				for {
-					_, err := db.Exec("UPDATE testData set value=? WHERE id=?", val, 1+rand.Intn(numRecords))
+					_, err := db.Exec("UPDATE testData set value=? WHERE id=?", val, 1+rand.Intn(numRows))
 					if err != nil {
 						fmt.Print(WRITE_RETRY_CODE)
 						continue
@@ -186,7 +179,6 @@ func runTest(writerCount, readerCount, numRecords, numUpdates int, locker RWLock
 			workChan <- rand.Intn(int(math.MaxUint32))
 		}
 		workChan <- -1 // stop signal
-		fmt.Println()
 	}()
 
 	start := time.Now()
