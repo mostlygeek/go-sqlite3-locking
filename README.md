@@ -1,10 +1,11 @@
 # Test sqlite3 locking situations
 
 Testing performance and behaviour of doing locking in go's runtime vs sqlite's runtime.
-The test sets up parallel readers and writers.  Each reader will try to read from the database as 
-fast as possible.  Writers will clear a work queue of updates to do.  Print some interesting 
-ASCII art of the access patterns. 
+The test sets up parallel readers and writers.  Each reader will try to read from the database as
+fast as possible.  Writers will clear a work queue of updates to do.  Print some interesting
+ASCII art of the access patterns.
 
+So far the fastest configuration after [adding db.SetMaxConns(1)](https://github.com/mostlygeek/go-sqlite3-locking/commit/f35ab6ca464b0fe0b3e2a71e76037bf9ebc551ee) is: `./test-sqlite -wal -type none`.  
 
 ## Installing dependencies:
 
@@ -16,7 +17,7 @@ This will fetch and prebuild go-sqlit3:
 ## Running it:
 
 ```
-# building it 
+# building it
 $ go build . -o test-sqlite
 
 # cli help
@@ -30,12 +31,13 @@ Usage of ./test-sqlite:
         Locking type: [none, mutex, rwmutex] (default "none")
   -updates int
         How many UPDATE dml operations to perform over numRows (default 500)
+  -wal
+        Use WAL mode for database
   -writers int
         Number of parallel writers (default 2)
 
-
-# (default) no locking, retries 
-$ ./test-sqlite 
+# (default) no locking, retries
+$ ./test-sqlite
 
 # using sync.Mutex
 $ ./test-sqlite -type mutex
@@ -63,7 +65,7 @@ Running sync.RWMutex test
 Duration:  4.106226ms
 ```
 
-## Try it with: 
+## Try it with:
 
 ```
 # more writers than readers
