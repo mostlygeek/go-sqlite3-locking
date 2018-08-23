@@ -43,6 +43,7 @@ func (l *MutexWrapper) RUnlock() { l.Unlock() }
 
 func main() {
 
+	walMode := flag.Bool("wal", false, "Use WAL mode for database")
 	testType := flag.String("type", "none", "Locking type: [none, mutex, rwmutex]")
 	writerCount := flag.Int("writers", 2, "Number of parallel writers")
 	readerCount := flag.Int("readers", 2, "Number of parallel readers ")
@@ -58,18 +59,54 @@ func main() {
 	fmt.Println("Read Retry  : ", SELECT_RETRY_CODE)
 	fmt.Println()
 
+	var filename string
+	if *walMode {
+		filename = fmt.Sprintf("db-wal-%d.db", time.Now().UnixNano())
+	} else {
+		filename = fmt.Sprintf("db-%d.db", time.Now().UnixNano())
+	}
+
+	// from go-sqlite readme: add cached=shared
+	dsn := fmt.Sprintf("file:%s?cached=shared", filename)
+	db, _ := sql.Open("sqlite3", dsn)
+	if *walMode {
+		_, err := db.Exec("PRAGMA journal_mode=WAL;")
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+	}
+
+	// from go-sqlite readme: This helps get rid of database is locked issue
+	// from testing this option, [-wal, -type none] resulted in the fastest runs
+	db.SetMaxOpenConns(1)
+
+	defer func() {
+		db.Close()
+		os.Remove(filename)
+	}()
+
+	_, err := db.Exec(`
+		CREATE TABLE testData(id integer primary key, value integer not null) WITHOUT ROWID;
+	`)
+
+	if err != nil {
+		fmt.Println("Failed to create datebase, ", err)
+		return
+	}
+
 	var dur time.Duration
-	var err error
+
 	switch *testType {
 	case "none":
 		fmt.Println("Running no-mutex test")
-		dur, err = runTest(*writerCount, *readerCount, *numRows, *numUpdates, &FakeLocker{})
+		dur, err = runTest(db, *writerCount, *readerCount, *numRows, *numUpdates, &FakeLocker{})
 	case "mutex":
 		fmt.Println("Running sync.Mutex test")
-		dur, err = runTest(*writerCount, *readerCount, *numRows, *numUpdates, &MutexWrapper{})
+		dur, err = runTest(db, *writerCount, *readerCount, *numRows, *numUpdates, &MutexWrapper{})
 	case "rwmutex":
 		fmt.Println("Running sync.RWMutex test")
-		dur, err = runTest(*writerCount, *readerCount, *numRows, *numUpdates, &sync.RWMutex{})
+		dur, err = runTest(db, *writerCount, *readerCount, *numRows, *numUpdates, &sync.RWMutex{})
 	default:
 		fmt.Println("Invalid test type:", *testType)
 	}
@@ -88,19 +125,7 @@ func main() {
 // database respectively.  It will create numRows and then do numUpdates to them
 // while constantly reading from the database as fast as possible.
 // locker is the sync.Locker that will be used to lock the database at the go layer
-func runTest(writerCount, readerCount, numRows, numUpdates int, locker RWLocker) (time.Duration, error) {
-	// open it in memory mode
-	dsn := fmt.Sprintf("file:%d?mode=memory&cache=shared&_busy_timeout=100", time.Now().UnixNano())
-	db, _ := sql.Open("sqlite3", dsn)
-	defer db.Close()
-
-	_, err := db.Exec(`
-		CREATE TABLE testData(id integer primary key, value integer not null) WITHOUT ROWID;
-		PRAGMA journal_mode = WAL;
-	`)
-	if err != nil {
-		return 0, err
-	}
+func runTest(db *sql.DB, writerCount, readerCount, numRows, numUpdates int, locker RWLocker) (time.Duration, error) {
 
 	// fill the database with the records we will be using
 	for i := 0; i <= numRows; i++ {
